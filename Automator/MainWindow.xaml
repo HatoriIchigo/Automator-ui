@@ -5,7 +5,7 @@
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         xmlns:local="clr-namespace:Automator"
         mc:Ignorable="d"
-        Title="MainWindow" Height="560" Width="800">
+        Title="MainWindow" Height="595" Width="800">
     <DockPanel>
         <Menu DockPanel.Dock="Top">
             <MenuItem Header="設定(_S)"/>

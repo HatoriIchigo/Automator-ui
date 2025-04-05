@@ -21,6 +21,8 @@ using System.Windows.Navigation;
 using System.Windows.Shapes;
 using static Automator.MainWindow;
 using automator_actioner;
+using static System.Runtime.CompilerServices.RuntimeHelpers;
+using System.Text.RegularExpressions;
 
 namespace Automator
 {
@@ -31,17 +33,18 @@ namespace Automator
     {
         private bool debug = false;
         string[] testCaseNames = null;
+        private Dictionary<string, string> properties { set; get; } = new Dictionary<string, string>();
         private ObservableCollection<Log> logs = new ObservableCollection<Log>();
 
         // actionerの定義
         private Actioner actioner;
-        private string ACTIONER_PATH = System.IO.Path.Combine(Directory.GetCurrentDirectory(), "automator-actioner.dll");
+        private string ACTIONER_PATH = System.IO.Path.Combine(Directory.GetCurrentDirectory(), "libs", "automator-actioner.dll");
 
         public MainWindow()
         {
             // UI周りの初期化
             InitializeComponent();
-            this.Height = 420;
+            this.Height = 460;
             Button_Debug.Content = "▶ デバッグ";
 
             // ログ関連の初期化
@@ -50,8 +53,21 @@ namespace Automator
             Combo_TestCase.Items.Add("DEBUG");
             Combo_TestCase.Text = "DEBUG";
 
+            // 共通設定ファイル読み込み
+            switch (ReadConfigFile(System.IO.Path.Combine(Directory.GetCurrentDirectory(), "config", "common.ini"))) {
+                case 0:
+                    break;
+                case 1:
+                    Application.Current.Shutdown(1);
+                    break;
+            }
+
             // Actionerロード
             Assembly assembly = Assembly.LoadFrom(ACTIONER_PATH);
+            foreach (Type type in assembly.GetTypes())
+            {
+                Debug.WriteLine(type.FullName);
+            }
             Type actionerType = assembly.GetType("automator_actioner.Actioner");
             this.actioner = (Actioner)Activator.CreateInstance(actionerType);
 
@@ -94,6 +110,7 @@ namespace Automator
                         {
                             Combo_TestCase.Items.Add(testCaseName);
                         }
+                        LogMessage("I-cmn-0020", "ファイル読み込みに成功しました。");
                     }
                     else
                     {
@@ -114,11 +131,11 @@ namespace Automator
          */
         private void OpenDestDirectory_Click(object sender, RoutedEventArgs e)
         {
-            var openFileDialog = new OpenFileDialog();
-            if (openFileDialog.ShowDialog() == true)
+            var folderDialog = new OpenFolderDialog();
+            if (folderDialog.ShowDialog() == true)
             {
-                Text_DestDirPath.Text = openFileDialog.FileName;
-                this.actioner.SetDestDirectory(openFileDialog.FileName);
+                Text_DestDirPath.Text = folderDialog.FolderName;
+                this.actioner.SetDestDirectory(folderDialog.FolderName);
             }
         }
 
@@ -144,13 +161,14 @@ namespace Automator
 
                         foreach (string log in this.actioner.Action(cmd))
                         {
+                            // 異常時
                             if (LogFlush(log) > 0)
                             {
                                 return;
                             }
                         }
                         this.actioner.NextPtr();
-                        Thread.Sleep(50);
+                        Thread.Sleep(Int32.Parse(this.properties["SLEEP_TIME"]));
                     }
 
                     // 終了ログ
@@ -166,11 +184,11 @@ namespace Automator
         private void Debug_Click(object sender, RoutedEventArgs e)
         {
             if (debug) {
-                this.Height = 420;
+                this.Height = 460;
                 Button_Debug.Content = "▶ デバッグ";
             }
             else {
-                this.Height = 570;
+                this.Height = 595;
                 Button_Debug.Content = "▼ デバッグ";
             }
             debug = !debug;
@@ -218,7 +236,7 @@ namespace Automator
                 logs.Add(_log);
             }
 
-            if (Combo_TestCase.Text != "DEBUG")
+            if (Combo_TestCase.Text != "DEBUG" && Combo_TestCase.Text != "")
             {
                 this.actioner.NextPtr();
                 Text_ActionCmd.Text = actioner.getActionCmd();
@@ -248,6 +266,7 @@ namespace Automator
         }
         private int LogFlush(string log)
         {
+            Debug.WriteLine("LOG: " + log);
             // 結果のjsonパース
             JsonNode? jsonNode;
             try
@@ -300,21 +319,95 @@ namespace Automator
             int ret = 0;
             switch (errCode[0])
             {
+                case 'D':
+                    if (this.properties["LOGLEVEL"] == "DEBUG")
+                    {
+                        Dispatcher.Invoke(new Action(() => { LogMessage(errCode, errMsg); }));
+                    }
+                    break;
+                case 'I':
+                    if (this.properties["LOGLEVEL"] == "INFO" || this.properties["LOGLEVEL"] == "DEBUG")
+                    {
+                        Dispatcher.Invoke(new Action(() => { LogMessage(errCode, errMsg); }));
+                    }
+                    break;
+                case 'W':
+                    MessageBox.Show(errMsg, errCode, MessageBoxButton.OK, MessageBoxImage.Warning);
+                    if (this.properties["LOGLEVEL"] == "WARN" || this.properties["LOGLEVEL"] == "INFO" || this.properties["LOGLEVEL"] == "DEBUG")
+                    {
+                        Dispatcher.Invoke(new Action(() => { LogMessage(errCode, errMsg); }));
+                    }
+                    break;
                 case 'E':
-                    MessageBox.Show(errMsg, errCode);
+                    MessageBox.Show(errMsg, errCode, MessageBoxButton.OK, MessageBoxImage.Error);
+                    if (this.properties["LOGLEVEL"] == "ERROR" || this.properties["LOGLEVEL"] == "WARN" || this.properties["LOGLEVEL"] == "INFO" || this.properties["LOGLEVEL"] == "DEBUG")
+                    {
+                        Dispatcher.Invoke(new Action(() => { LogMessage(errCode, errMsg); }));
+                    }
                     ret = 1;
                     break;
-                case 'C':
-                    MessageBox.Show(errMsg, errCode);
-                    ret = 1;
-                    break;
-                case 'F':
-                    MessageBox.Show(errMsg, errCode);
-                    ret = 1;
+                default:
+                    MessageBox.Show("存在しないログレベルが検出されました。[errCode: " + errCode + "]", "E-cmn-0027", MessageBoxButton.OK, MessageBoxImage.Error);
                     break;
             }
-            Dispatcher.Invoke(new Action(() => { LogMessage(errCode, errMsg); }));
             return ret;
+        }
+
+        private int ReadConfigFile(string configPath)
+        {
+            // 設定ファイル無し
+            if (!File.Exists(configPath))
+            {
+                MessageBox.Show("設定ファイルが見つかりません。[configPath:  " + configPath + "]\nアプリケーションを終了します。", "E-cmn-0021", MessageBoxButton.OK, MessageBoxImage.Error);
+                return 1;
+            }
+
+            // 設定ファイル読み込み
+            foreach (string line in File.ReadAllLines(configPath))
+            {
+                if (string.IsNullOrWhiteSpace(line) || line.TrimStart().StartsWith("#")) continue;
+                string[] d = line.Split(new char[] { '=' });
+                if (d.Length == 2)
+                {
+                    this.properties[d[0].Trim()] = d[1].Trim();
+                }
+                else
+                {
+                    MessageBox.Show("設定ファイルに異常な値が見つかりました。[configFilePath: " + configPath + " line:  " + line + "]\nアプリケーションを終了します。", "E-cmn-0022", MessageBoxButton.OK, MessageBoxImage.Error);
+                    return 1;
+                }
+            }
+
+            // 設定値確認
+            // SLEEP_TIME
+            if (!this.properties.ContainsKey("SLEEP_TIME"))
+            {
+                MessageBox.Show("設定ファイルに[SLEEP_TIME]が見つかりません。\nアプリケーションを終了します。", "E-cmn-0023", MessageBoxButton.OK, MessageBoxImage.Error);
+                return 1;
+            }
+            if (!Regex.IsMatch(this.properties["SLEEP_TIME"], @"^\d+$"))
+            {
+                MessageBox.Show("設定値[SLEEP_TIME]は数値に変換できません。\nアプリケーションを終了します。", "E-cmn-0024", MessageBoxButton.OK, MessageBoxImage.Error);
+                return 1;
+            }
+
+            // ログレベル
+            string[] logLevels = { "DEBUG", "INFO", "WARN", "ERROR" };
+            if (!this.properties.ContainsKey("LOGLEVEL"))
+            {
+                this.properties["LOGLEVEL"] = "INFO";
+            }
+            if (!logLevels.Contains(this.properties["LOGLEVEL"]))
+            {
+                MessageBox.Show("設定値[LOGLEVEL]の値が異常でした。\nログレベルをIFNOに設定します。", "W-cmn-0026", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+
+            if (this.properties["LOGLEVEL"] == "DEBUG")
+            {
+                LogMessage("D-cmn-0025", "設定値SLEEP_TIME[" + this.properties["SLEEP_TIME"] + "] 確認OK");
+                LogMessage("D-cmn-0025", "設定値LOGLEVEL[" + this.properties["LOGLEVEL"] + "] 確認OK");
+            }
+            return 0;
         }
     }
 }
