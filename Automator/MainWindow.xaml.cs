@@ -64,10 +64,6 @@ namespace Automator
 
             // Actionerロード
             Assembly assembly = Assembly.LoadFrom(ACTIONER_PATH);
-            foreach (Type type in assembly.GetTypes())
-            {
-                Debug.WriteLine(type.FullName);
-            }
             Type actionerType = assembly.GetType("automator_actioner.Actioner");
             this.actioner = (Actioner)Activator.CreateInstance(actionerType);
 
@@ -171,6 +167,14 @@ namespace Automator
                         Thread.Sleep(Int32.Parse(this.properties["SLEEP_TIME"]));
                     }
 
+                    foreach (string log in this.actioner.Finish())
+                    {
+                        if (LogFlush(log) > 0)
+                        {
+                            return;
+                        }
+                    }
+
                     // 終了ログ
                     Dispatcher.Invoke(new Action(() => { LogMessage("I-cmn-0002", "ケース[" + caseName + "]の処理を終了します。"); }));
                 }
@@ -213,6 +217,7 @@ namespace Automator
 
             foreach (string log in this.actioner.Action(Text_ActionCmd.Text))
             {
+                Debug.WriteLine("LOGGG: " + log);
                 JsonNode jsonNode = JsonNode.Parse(log);
 
                 Log _log = new Log();
